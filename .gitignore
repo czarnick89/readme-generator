@@ -10,6 +10,7 @@ __pycache__/
 # These can contain sensitive information and should not be committed!
 .terraform/
 *.tfstate
+*.tfstate.backup
 *.tfstate.*.backup
 
 # Build artifacts
