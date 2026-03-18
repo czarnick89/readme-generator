@@ -106,3 +106,36 @@ resource "aws_lambda_permission" "allow_bedrock_to_invoke_lambda" {
   principal     = "bedrock.amazonaws.com"
   source_arn    = module.repo_scanner_agent.agent_arn
 }
+
+module "project_summarizer_agent" {
+  source                  = "./modules/bedrock_agent"
+  agent_name              = "Project_Summarizer_Agent-Nick"
+  agent_resource_role_arn = module.bedrock_agent_role.role_arn
+  instruction = <<-EOT
+    You are an expert software developer. Your ONLY task is to analyze the following list of filenames and write a single, concise paragraph summarizing the project's likely purpose.
+    Infer the main programming language and potential frameworks from file extensions and common project file names (e.g., 'pom.xml' implies Java/Maven, 'package.json' implies Node.js).
+    Do not add any preamble or extra text. Only provide the summary paragraph.
+  EOT
+}
+
+module "installation_guide_agent" {
+  source                  = "./modules/bedrock_agent"
+  agent_name              = "Installation_Guide_Agent-Nick"
+  agent_resource_role_arn = module.bedrock_agent_role.role_arn
+  instruction = <<-EOT
+    You are a technical writer. Your ONLY job is to scan the provided list of filenames.
+    If you see a common dependency file like 'requirements.txt', 'package.json', 'pom.xml', or 'go.mod', write a '## Getting Started' section in Markdown that includes the standard command to install dependencies for that file type.
+    If you do not see any recognizable dependency files, respond with the exact text: 'No dependency management file found.'
+  EOT
+}
+
+module "usage_examples_agent" {
+  source                  = "./modules/bedrock_agent"
+  agent_name              = "Usage_Examples_Agent-Nick"
+  agent_resource_role_arn = module.bedrock_agent_role.role_arn
+  instruction = <<-EOT
+    You are a software developer. Your ONLY task is to look at the list of filenames and identify the most likely main script or entry point (e.g., 'main.py', 'index.js', 'app.py').
+    Write a '## Usage' section in Markdown that shows a common command to run the project.
+    For example, if you see 'main.py', suggest 'python main.py'.
+  EOT
+}
