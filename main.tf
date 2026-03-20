@@ -96,6 +96,35 @@ resource "aws_bedrockagent_agent_action_group" "repo_scanner_action_group" {
   api_schema {
     payload = file("${path.root}/repo_scanner_schema.json")
   }
+
+  # Bedrock refuses to delete an ENABLED action group — disable it first.
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<-EOT
+      python3 -c "
+import boto3
+client = boto3.client('bedrock-agent', region_name='us-east-1')
+# Fetch current action group to get the executor ARN and schema
+current = client.get_agent_action_group(
+    agentId='${self.agent_id}',
+    agentVersion='DRAFT',
+    actionGroupId='${self.action_group_id}',
+)['agentActionGroup']
+with open('${path.root}/repo_scanner_schema.json') as f:
+    schema = f.read()
+client.update_agent_action_group(
+    agentId='${self.agent_id}',
+    agentVersion='DRAFT',
+    actionGroupId='${self.action_group_id}',
+    actionGroupName='${self.action_group_name}',
+    actionGroupState='DISABLED',
+    actionGroupExecutor=current['actionGroupExecutor'],
+    apiSchema={'payload': schema},
+)
+print('Action group disabled successfully.')
+"
+    EOT
+  }
 }
 
 # This resource grants the Bedrock Agent permission to invoke our Lambda function
@@ -138,4 +167,119 @@ module "usage_examples_agent" {
     Write a '## Usage' section in Markdown that shows a common command to run the project.
     For example, if you see 'main.py', suggest 'python main.py'.
   EOT
+}
+
+module "final_compiler_agent" {
+  source                  = "./modules/bedrock_agent"
+  agent_name              = "Final_Compiler_Agent-Nick"
+  agent_resource_role_arn = module.bedrock_agent_role.role_arn
+  instruction = <<-EOT
+    You are a technical document compiler. Your ONLY task is to take a JSON object containing different sections of a README file (project_summary, installation_guide, and usage_examples) and assemble them into a single, well-formatted Markdown document.
+    Use the repository name for the main H1 header. Use H2 headers for all other sections (e.g., ## Project Summary, ## Installation, ## Usage).
+    Do not add any preamble, apologies, or conversational text. Only return the pure, complete Markdown document.
+  EOT
+}
+
+# DEDICATED role for the Orchestrator Lambda
+module "orchestrator_execution_role" {
+  source             = "./modules/iam"
+  role_name          = "ReadmeGeneratorOrchestratorExecutionRole-Nick"
+  service_principals = ["lambda.amazonaws.com"]
+  policy_arns = [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  ]
+}
+
+# Orchestrator-specific permissions policy
+resource "aws_iam_policy" "orchestrator_permissions" {
+  name        = "ReadmeGeneratorOrchestratorPolicy-Nick"
+  description = "Allows Lambda to invoke Bedrock Agents and use the S3 bucket."
+
+  policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "BedrockAgentInvoke"
+        Action = [
+          "bedrock:InvokeAgent",
+          "bedrock-agent-runtime:InvokeAgent"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      },
+      {
+        Sid      = "InvokeRepoScannerLambda"
+        Action   = ["lambda:InvokeFunction"]
+        Effect   = "Allow"
+        Resource = aws_lambda_function.repo_scanner_lambda.arn
+      },
+      {
+        Sid    = "S3BucketOperations"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:HeadObject"
+        ]
+        Effect   = "Allow"
+        Resource = "${module.s3_bucket.bucket_arn}/*"
+      }
+    ]
+  })
+}
+
+# Attach the policy to the ORCHESTRATOR role (not the lambda_execution_role)
+resource "aws_iam_role_policy_attachment" "orchestrator_permissions_attach" {
+  role       = module.orchestrator_execution_role.role_name
+  policy_arn = aws_iam_policy.orchestrator_permissions.arn
+}
+
+data "archive_file" "orchestrator_zip" {
+  type        = "zip"
+  source_dir  = "${path.root}/src/orchestrator"
+  output_path = "${path.root}/dist/orchestrator.zip"
+}
+
+resource "aws_lambda_function" "orchestrator_lambda" {
+  function_name    = "ReadmeGeneratorOrchestrator"
+  role             = module.orchestrator_execution_role.role_arn
+  filename         = data.archive_file.orchestrator_zip.output_path
+  handler          = "lambda_function.handler"
+  runtime          = "python3.11"
+  timeout          = 180
+  source_code_hash = data.archive_file.orchestrator_zip.output_base64sha256
+
+  environment {
+    variables = {
+      REPO_SCANNER_LAMBDA_NAME          = aws_lambda_function.repo_scanner_lambda.function_name
+      PROJECT_SUMMARIZER_AGENT_ID       = module.project_summarizer_agent.agent_id
+      PROJECT_SUMMARIZER_AGENT_ALIAS_ID = "TSTALIASID"
+      INSTALLATION_GUIDE_AGENT_ID       = module.installation_guide_agent.agent_id
+      INSTALLATION_GUIDE_AGENT_ALIAS_ID = "TSTALIASID"
+      USAGE_EXAMPLES_AGENT_ID           = module.usage_examples_agent.agent_id
+      USAGE_EXAMPLES_AGENT_ALIAS_ID     = "TSTALIASID"
+      FINAL_COMPILER_AGENT_ID           = module.final_compiler_agent.agent_id
+      FINAL_COMPILER_AGENT_ALIAS_ID     = "TSTALIASID"
+      OUTPUT_BUCKET                     = module.s3_bucket.bucket_id
+    }
+  }
+}
+
+resource "aws_lambda_permission" "allow_s3_to_invoke_orchestrator" {
+  statement_id  = "AllowS3ToInvokeOrchestratorLambda"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.orchestrator_lambda.function_name
+  principal     = "s3.amazonaws.com"
+  source_arn    = module.s3_bucket.bucket_arn
+}
+
+resource "aws_s3_bucket_notification" "bucket_notification" {
+  bucket = module.s3_bucket.bucket_id
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.orchestrator_lambda.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "inputs/"
+  }
+
+  depends_on = [aws_lambda_permission.allow_s3_to_invoke_orchestrator]
 }

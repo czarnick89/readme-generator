@@ -28,3 +28,6 @@ dist/
 *.exe
 *.zip
 *.tar.gz
+
+*.md
+https---*

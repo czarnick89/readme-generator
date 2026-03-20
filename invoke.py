@@ -3,6 +3,7 @@
 
 import itertools
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -24,6 +25,7 @@ AGENT_NAMES = {
 lambda_client  = boto3.client("lambda",               region_name=REGION)
 bedrock_mgmt   = boto3.client("bedrock-agent",        region_name=REGION)
 bedrock_rt     = boto3.client("bedrock-agent-runtime", region_name=REGION)
+s3_client      = boto3.client("s3",                   region_name=REGION)
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +158,7 @@ def scan_repo(repo_url: str) -> list[str]:
     """Invoke the RepoScanner Lambda and return the file list."""
     event = {
         "actionGroup": "ScanRepoAction",
-        "apiPath": "/scan-repo",
+        "apiPath": "/scan_repo",
         "httpMethod": "POST",
         "requestBody": {
             "content": {
@@ -207,6 +209,29 @@ def _files_to_message(files: list[str]) -> str:
     return "Here is the list of files in the repository:\n" + "\n".join(files)
 
 
+def _get_readme_bucket() -> str:
+    """Resolve the S3 output bucket from terraform output (cached in module-level var)."""
+    try:
+        result = subprocess.run(
+            ["terraform", "output", "-raw", "readme_bucket_name"],
+            capture_output=True, text=True, check=True,
+            cwd=str(__import__('pathlib').Path(__file__).parent),
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError("Could not read terraform output readme_bucket_name — run terraform apply first") from e
+
+
+def trigger_pipeline(repo_url: str) -> str:
+    """Upload an empty S3 key to kick off the orchestrator Lambda."""
+    bucket = _get_readme_bucket()
+    encoded = repo_url.replace("://", "---").replace("/", "-SLASH-")
+    key = f"inputs/{encoded}"
+    with Spinner("Uploading trigger key"):
+        s3_client.put_object(Bucket=bucket, Key=key, Body=b"")
+    return f"s3://{bucket}/{key}"
+
+
 def _print_menu():
     print("┌─────────────────────────────────────────────┐")
     print("│  README Generator CLI                       │")
@@ -216,6 +241,7 @@ def _print_menu():
     print("│  3) Installation guide (Bedrock agent)      │")
     print("│  4) Usage examples     (Bedrock agent)      │")
     print("│  5) Run ALL agents on a URL                 │")
+    print("│  6) Trigger full pipeline (S3 → Lambda)     │")
     print("│  h) Session history                         │")
     print("│  q) Quit                                    │")
     print("└─────────────────────────────────────────────┘")
@@ -301,6 +327,21 @@ def main():
                 print(f"── {label} ──────────────────────────────────────")
                 print(invoke_bedrock_agent(agent_ids[key], message, spinner_label))
                 print()
+
+        # ── 6: Trigger full pipeline ──────────────────────────────────────────
+        elif choice == "6":
+            url = _prompt("GitHub URL> ")
+            if not url:
+                continue
+            try:
+                s3_key = trigger_pipeline(url)
+                print(f"\nTrigger uploaded: {s3_key}")
+                print("The orchestrator Lambda will generate your README momentarily.")
+                bucket = _get_readme_bucket()
+                repo_name = url.rstrip("/").split("/")[-1].replace(".git", "")
+                print(f"When done, fetch it with:\n  aws s3 cp s3://{bucket}/outputs/{repo_name}/README.md README.md\n")
+            except RuntimeError as e:
+                print(f"  Error: {e}\n")
 
         # ── h: History ────────────────────────────────────────────────────────
         elif choice == "h":
