@@ -5,10 +5,6 @@ on:
     branches:
       - master
 
-permissions:
-  id-token: write # This is required for OIDC authentication
-  contents: read
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
