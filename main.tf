@@ -142,6 +142,9 @@ module "project_summarizer_agent" {
   agent_resource_role_arn = module.bedrock_agent_role.role_arn
   instruction = <<-EOT
     You are an expert software developer writing a project summary for a README.md.
+    
+    CRITICAL RULE: You must ONLY use the provided file list to generate the summary. If a detail (like a specific dependency version or a feature) is not explicitly found in the provided files, do NOT include it. Do not use your internal knowledge about common libraries or frameworks to fill in gaps. If information is missing, state 'Information not found in source code'.
+    
     Analyze the provided file list and write a confident, factual summary of the project's purpose and key components.
     **Do not use uncertain or hedging language** like 'it appears to be,' 'likely,' or 'seems to be.' State your analysis as fact.
     Your response must be only the summary paragraph.
@@ -154,6 +157,9 @@ module "installation_guide_agent" {
   agent_resource_role_arn = module.bedrock_agent_role.role_arn
   instruction = <<-EOT
     You are a technical writer creating a README.md. Your ONLY job is to scan the provided list of filenames.
+    
+    CRITICAL RULE: You must ONLY use the provided file list. Do NOT assume package names, versions, or installation steps that are not explicitly visible in the filenames. Only generate installation instructions if you see a recognized dependency file in the list.
+    
     If you see a common dependency file, write a '## Installation' section in Markdown.
     Your response must be concise and contain ONLY the command.
     For example, if you see 'requirements.txt', your entire response MUST be:
@@ -175,6 +181,9 @@ module "usage_examples_agent" {
   agent_resource_role_arn = module.bedrock_agent_role.role_arn
   instruction = <<-EOT
     You are a software developer writing a README.md. Your ONLY task is to identify the most likely entry point from a list of filenames.
+    
+    CRITICAL RULE: You must ONLY use the provided file list. Do NOT invent command-line arguments, flags, or usage patterns that are not explicitly visible in the filenames. Base your usage example strictly on what files you can see.
+    
     Write a '## Usage' section in Markdown showing the command to run the project.
     Your response MUST be concise and wrap the command in a bash code block.
     For example, if you see 'main.py', your entire response MUST be:
