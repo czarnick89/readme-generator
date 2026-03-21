@@ -40,7 +40,7 @@ jobs:
           echo "Triggering AI README Generation..."
           BUCKET_NAME=$(terraform output -raw readme_bucket_name)
           REPO_URL="https://github.com/${{ github.repository }}"
-          FILENAME=$(python3 -c "import urllib.parse; print(urllib.parse.quote_plus('${REPO_URL}'))")
+          FILENAME=$(echo "$REPO_URL" | sed 's|https://|https---|' | sed 's|/|-SLASH-|g')
           touch ${FILENAME}
           aws s3 cp ${FILENAME} s3://${BUCKET_NAME}/inputs/${FILENAME}
           rm ${FILENAME}
