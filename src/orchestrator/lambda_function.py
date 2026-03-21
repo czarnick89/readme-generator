@@ -3,6 +3,7 @@ import boto3
 import os
 import uuid
 import urllib.parse
+import time
 
 # Initialize AWS clients
 s3_client = boto3.client('s3')
@@ -58,22 +59,29 @@ def invoke_agent_helper(agent_id, alias_id, input_text):
     """Invoke a Bedrock agent with a fresh session ID and return the response."""
     session_id = str(uuid.uuid4())
     print(f"Invoking agent {agent_id} (session {session_id}) with input: {input_text[:200]}")
-    try:
-        response = bedrock_agent_runtime_client.invoke_agent(
-            agentId=agent_id,
-            agentAliasId=alias_id,
-            sessionId=session_id,
-            inputText=input_text
-        )
-        completion = ""
-        for event in response.get("completion"):
-            chunk = event["chunk"]
-            completion += chunk["bytes"].decode()
-        print(f"Agent {agent_id} returned: {completion[:200]}")
-        return completion
-    except Exception as e:
-        print(f"Error invoking agent {agent_id}: {e}")
-        return f"Error processing this section: {e}"
+    for attempt in range(3):
+        try:
+            response = bedrock_agent_runtime_client.invoke_agent(
+                agentId=agent_id,
+                agentAliasId=alias_id,
+                sessionId=session_id,
+                inputText=input_text
+            )
+            completion = ""
+            for event in response.get("completion"):
+                chunk = event["chunk"]
+                completion += chunk["bytes"].decode()
+            print(f"Agent {agent_id} returned: {completion[:200]}")
+            return completion
+        except Exception as e:
+            if attempt < 2 and "throttling" in str(e).lower():
+                wait = 10 * (attempt + 1)
+                print(f"Throttled on agent {agent_id}, retrying in {wait}s (attempt {attempt + 1}/3)...")
+                time.sleep(wait)
+                session_id = str(uuid.uuid4())
+            else:
+                print(f"Error invoking agent {agent_id}: {e}")
+                return f"Error processing this section: {e}"
 
 
 def handler(event, context):
